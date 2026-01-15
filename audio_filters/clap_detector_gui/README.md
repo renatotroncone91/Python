@@ -31,6 +31,7 @@ python app.py
 - **Hop (ms)**: passo tra finestre.
 - **Soglia (0-1)**: rapporto rispetto al picco massimo dell'energia (es. 0.6).
 - **Gap minimo (s)**: distanza minima tra clap consecutivi.
+- **Gap unione (s)**: se due clap sono più vicini di questo valore, vengono uniti nello stesso segmento (utile per applausi lunghi).
 - **Margine inizio (s)**: secondi aggiuntivi prima del clap.
 - **Margine fine (s)**: secondi aggiuntivi dopo il clap.
 

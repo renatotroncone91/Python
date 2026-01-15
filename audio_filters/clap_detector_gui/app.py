@@ -18,6 +18,7 @@ class DetectionConfig:
     hop_ms: float = 10.0
     threshold_ratio: float = 0.6
     min_gap_s: float = 0.25
+    merge_gap_s: float = 2.0
     margin_before_s: float = 0.5
     margin_after_s: float = 0.8
 
@@ -69,6 +70,7 @@ class ClapDetectorApp(tk.Tk):
         self.hop_ms_var = tk.DoubleVar(value=10.0)
         self.threshold_ratio_var = tk.DoubleVar(value=0.6)
         self.min_gap_var = tk.DoubleVar(value=0.25)
+        self.merge_gap_var = tk.DoubleVar(value=2.0)
         self.margin_before_var = tk.DoubleVar(value=0.5)
         self.margin_after_var = tk.DoubleVar(value=0.8)
 
@@ -76,8 +78,9 @@ class ClapDetectorApp(tk.Tk):
         self._add_labeled_entry(settings_frame, "Hop (ms)", self.hop_ms_var, 0, 2)
         self._add_labeled_entry(settings_frame, "Soglia (0-1)", self.threshold_ratio_var, 1, 0)
         self._add_labeled_entry(settings_frame, "Gap minimo (s)", self.min_gap_var, 1, 2)
-        self._add_labeled_entry(settings_frame, "Margine inizio (s)", self.margin_before_var, 2, 0)
-        self._add_labeled_entry(settings_frame, "Margine fine (s)", self.margin_after_var, 2, 2)
+        self._add_labeled_entry(settings_frame, "Gap unione (s)", self.merge_gap_var, 2, 0)
+        self._add_labeled_entry(settings_frame, "Margine inizio (s)", self.margin_before_var, 2, 2)
+        self._add_labeled_entry(settings_frame, "Margine fine (s)", self.margin_after_var, 3, 0)
 
         output_frame = ttk.LabelFrame(main, text="Output")
         output_frame.pack(fill=tk.X, pady=6)
@@ -105,17 +108,17 @@ class ClapDetectorApp(tk.Tk):
         segment_frame.pack(fill=tk.BOTH, expand=True, pady=6)
 
         self.segment_tree = ttk.Treeview(
-            segment_frame, columns=("file", "clap", "start", "end", "selected"), show="headings", height=6
+            segment_frame, columns=("file", "start", "end", "duration", "selected"), show="headings", height=6
         )
         self.segment_tree.heading("file", text="File")
-        self.segment_tree.heading("clap", text="Clap (s)")
         self.segment_tree.heading("start", text="Inizio (s)")
         self.segment_tree.heading("end", text="Fine (s)")
+        self.segment_tree.heading("duration", text="Durata (s)")
         self.segment_tree.heading("selected", text="Seleziona")
         self.segment_tree.column("file", width=240, anchor=tk.W)
-        self.segment_tree.column("clap", width=80, anchor=tk.E)
         self.segment_tree.column("start", width=80, anchor=tk.E)
         self.segment_tree.column("end", width=80, anchor=tk.E)
+        self.segment_tree.column("duration", width=90, anchor=tk.E)
         self.segment_tree.column("selected", width=90, anchor=tk.CENTER)
         self.segment_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.segment_tree.bind("<<TreeviewSelect>>", self._on_segment_select)
@@ -179,6 +182,7 @@ class ClapDetectorApp(tk.Tk):
             hop_ms=self.hop_ms_var.get(),
             threshold_ratio=self.threshold_ratio_var.get(),
             min_gap_s=self.min_gap_var.get(),
+            merge_gap_s=self.merge_gap_var.get(),
             margin_before_s=self.margin_before_var.get(),
             margin_after_s=self.margin_after_var.get(),
         )
@@ -255,19 +259,19 @@ class ClapDetectorApp(tk.Tk):
         preview_dir = export.output_dir / "_preview" / base_name
         preview_dir.mkdir(parents=True, exist_ok=True)
 
-        for index, clap_time in enumerate(clap_times, start=1):
-            start_time = max(0.0, clap_time - config.margin_before_s)
-            end_time = clap_time + config.margin_after_s
+        grouped = group_clap_segments(clap_times, config.merge_gap_s)
+        for index, (start_clap, end_clap) in enumerate(grouped, start=1):
+            start_time = max(0.0, start_clap - config.margin_before_s)
+            end_time = end_clap + config.margin_after_s
             duration = max(0.1, end_time - start_time)
 
             segment_id = f"{base_name}-{index:02d}"
             preview_path = preview_dir / f"{segment_id}.png"
-            create_preview_image(video_path, clap_time, preview_path)
+            create_preview_image(video_path, start_time, preview_path)
 
             segment = Segment(
                 id=segment_id,
                 video_path=video_path,
-                clap_time=clap_time,
                 start_time=start_time,
                 end_time=end_time,
                 duration=duration,
@@ -284,9 +288,9 @@ class ClapDetectorApp(tk.Tk):
             iid=segment.id,
             values=(
                 segment.video_path.name,
-                f"{segment.clap_time:.2f}",
                 f"{segment.start_time:.2f}",
                 f"{segment.end_time:.2f}",
+                f"{segment.duration:.2f}",
                 "Sì" if segment.selected else "No",
             ),
         )
@@ -412,11 +416,30 @@ def detect_claps(audio_path: Path, config: DetectionConfig) -> list[float]:
     return filtered_times
 
 
+def group_clap_segments(clap_times: list[float], merge_gap_s: float) -> list[tuple[float, float]]:
+    if not clap_times:
+        return []
+    sorted_times = sorted(clap_times)
+    segments: list[tuple[float, float]] = []
+    segment_start = sorted_times[0]
+    last_time = sorted_times[0]
+
+    for time in sorted_times[1:]:
+        if time - last_time <= merge_gap_s:
+            last_time = time
+            continue
+        segments.append((segment_start, last_time))
+        segment_start = time
+        last_time = time
+
+    segments.append((segment_start, last_time))
+    return segments
+
+
 @dataclass
 class Segment:
     id: str
     video_path: Path
-    clap_time: float
     start_time: float
     end_time: float
     duration: float
