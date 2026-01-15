@@ -1,3 +1,4 @@
+import base64
 import queue
 import threading
 import tkinter as tk
@@ -40,6 +41,9 @@ class ClapDetectorApp(tk.Tk):
         self.segments: dict[str, Segment] = {}
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.preview_images: dict[str, tk.PhotoImage] = {}
+        self.preview_window: tk.Toplevel | None = None
+        self.preview_tree: ttk.Treeview | None = None
+        self.preview_label: ttk.Label | None = None
 
         self._build_ui()
         self._poll_log()
@@ -104,32 +108,6 @@ class ClapDetectorApp(tk.Tk):
         )
         self.export_button.pack(side=tk.LEFT, padx=6)
 
-        segment_frame = ttk.LabelFrame(main, text="Segmenti rilevati")
-        segment_frame.pack(fill=tk.BOTH, expand=True, pady=6)
-
-        self.segment_tree = ttk.Treeview(
-            segment_frame, columns=("file", "start", "end", "duration", "selected"), show="headings", height=6
-        )
-        self.segment_tree.heading("file", text="File")
-        self.segment_tree.heading("start", text="Inizio (s)")
-        self.segment_tree.heading("end", text="Fine (s)")
-        self.segment_tree.heading("duration", text="Durata (s)")
-        self.segment_tree.heading("selected", text="Seleziona")
-        self.segment_tree.column("file", width=240, anchor=tk.W)
-        self.segment_tree.column("start", width=80, anchor=tk.E)
-        self.segment_tree.column("end", width=80, anchor=tk.E)
-        self.segment_tree.column("duration", width=90, anchor=tk.E)
-        self.segment_tree.column("selected", width=90, anchor=tk.CENTER)
-        self.segment_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
-        self.segment_tree.bind("<<TreeviewSelect>>", self._on_segment_select)
-        self.segment_tree.bind("<ButtonRelease-1>", self._toggle_segment_selection)
-
-        preview_frame = ttk.Frame(segment_frame)
-        preview_frame.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
-        ttk.Label(preview_frame, text="Preview").pack()
-        self.preview_label = ttk.Label(preview_frame)
-        self.preview_label.pack(pady=6)
-
         log_frame = ttk.LabelFrame(main, text="Log")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=6)
         self.log_text = tk.Text(log_frame, state=tk.DISABLED)
@@ -187,23 +165,24 @@ class ClapDetectorApp(tk.Tk):
             margin_after_s=self.margin_after_var.get(),
         )
 
-        export_config = ExportConfig(output_dir=output_dir)
-
         self.run_button.config(state=tk.DISABLED)
         self.export_button.config(state=tk.DISABLED)
-        self.segment_tree.delete(*self.segment_tree.get_children())
-        self.preview_label.config(image="")
         self.preview_images.clear()
         self.segments.clear()
+        if self.preview_window is not None:
+            self.preview_window.destroy()
+            self.preview_window = None
+            self.preview_tree = None
+            self.preview_label = None
         worker = threading.Thread(
             target=self._analyze_files,
-            args=(self.file_list.copy(), detection_config, export_config),
+            args=(self.file_list.copy(), detection_config),
             daemon=True,
         )
         worker.start()
 
     def _analyze_files(
-        self, files: list[Path], detection_config: DetectionConfig, export_config: ExportConfig
+        self, files: list[Path], detection_config: DetectionConfig
     ) -> None:
         try:
             for file_path in files:
@@ -216,7 +195,7 @@ class ClapDetectorApp(tk.Tk):
                         self._log("Nessun clap rilevato.")
                         continue
                     self._log(f"Rilevati {len(clap_times)} clap. Generazione preview...")
-                    self._build_segments(file_path, clap_times, detection_config, export_config)
+                    self._build_segments(file_path, clap_times, detection_config)
         except Exception as exc:
             self._log(f"Errore: {exc}")
         finally:
@@ -224,6 +203,7 @@ class ClapDetectorApp(tk.Tk):
             self.run_button.config(state=tk.NORMAL)
             if self.segments:
                 self.export_button.config(state=tk.NORMAL)
+                self._open_preview_window()
 
     def _extract_audio(self, input_path: Path, output_path: Path) -> None:
         cmd = [
@@ -253,12 +233,8 @@ class ClapDetectorApp(tk.Tk):
         video_path: Path,
         clap_times: list[float],
         config: DetectionConfig,
-        export: ExportConfig,
     ) -> None:
         base_name = video_path.stem
-        preview_dir = export.output_dir / "_preview" / base_name
-        preview_dir.mkdir(parents=True, exist_ok=True)
-
         grouped = group_clap_segments(clap_times, config.merge_gap_s)
         for index, (start_clap, end_clap) in enumerate(grouped, start=1):
             start_time = max(0.0, start_clap - config.margin_before_s)
@@ -266,61 +242,48 @@ class ClapDetectorApp(tk.Tk):
             duration = max(0.1, end_time - start_time)
 
             segment_id = f"{base_name}-{index:02d}"
-            preview_path = preview_dir / f"{segment_id}.png"
-            create_preview_image(video_path, start_time, preview_path)
-
             segment = Segment(
                 id=segment_id,
                 video_path=video_path,
                 start_time=start_time,
                 end_time=end_time,
                 duration=duration,
-                preview_path=preview_path,
                 selected=True,
             )
             self.segments[segment_id] = segment
-            self._add_segment_row(segment)
-
-    def _add_segment_row(self, segment: "Segment") -> None:
-        self.segment_tree.insert(
-            "",
-            tk.END,
-            iid=segment.id,
-            values=(
-                segment.video_path.name,
-                f"{segment.start_time:.2f}",
-                f"{segment.end_time:.2f}",
-                f"{segment.duration:.2f}",
-                "Sì" if segment.selected else "No",
-            ),
-        )
+        if self.preview_tree is not None:
+            for segment in self.segments.values():
+                self._add_preview_row(segment)
 
     def _toggle_segment_selection(self, event: tk.Event) -> None:
-        column = self.segment_tree.identify_column(event.x)
+        if self.preview_tree is None:
+            return
+        column = self.preview_tree.identify_column(event.x)
         if column != "#5":
             return
-        row_id = self.segment_tree.identify_row(event.y)
+        row_id = self.preview_tree.identify_row(event.y)
         if not row_id:
             return
         segment = self.segments.get(row_id)
         if segment is None:
             return
         segment.selected = not segment.selected
-        self.segment_tree.set(row_id, "selected", "Sì" if segment.selected else "No")
+        self.preview_tree.set(row_id, "selected", "Sì" if segment.selected else "No")
 
     def _on_segment_select(self, _event: tk.Event) -> None:
-        selected = self.segment_tree.selection()
+        if self.preview_tree is None or self.preview_label is None:
+            return
+        selected = self.preview_tree.selection()
         if not selected:
             return
         segment = self.segments.get(selected[0])
         if segment is None:
             return
-        if segment.preview_path.exists():
-            image = tk.PhotoImage(file=str(segment.preview_path))
+        image = self.preview_images.get(segment.id)
+        if image is None:
+            image = create_preview_image(segment.video_path, segment.start_time)
             self.preview_images[segment.id] = image
-            self.preview_label.config(image=image)
-        else:
-            self.preview_label.config(image="")
+        self.preview_label.config(image=image)
 
     def _export_selected(self) -> None:
         selected_segments = [segment for segment in self.segments.values() if segment.selected]
@@ -348,6 +311,65 @@ class ClapDetectorApp(tk.Tk):
             self._log("Export completato.")
             self.run_button.config(state=tk.NORMAL)
             self.export_button.config(state=tk.NORMAL)
+
+    def _open_preview_window(self) -> None:
+        if self.preview_window is not None:
+            self.preview_window.deiconify()
+            return
+        self.preview_window = tk.Toplevel(self)
+        self.preview_window.title("Preview segmenti")
+        self.preview_window.geometry("900x500")
+
+        segment_frame = ttk.Frame(self.preview_window, padding=12)
+        segment_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.preview_tree = ttk.Treeview(
+            segment_frame, columns=("file", "start", "end", "duration", "selected"), show="headings"
+        )
+        self.preview_tree.heading("file", text="File")
+        self.preview_tree.heading("start", text="Inizio (s)")
+        self.preview_tree.heading("end", text="Fine (s)")
+        self.preview_tree.heading("duration", text="Durata (s)")
+        self.preview_tree.heading("selected", text="Seleziona")
+        self.preview_tree.column("file", width=260, anchor=tk.W)
+        self.preview_tree.column("start", width=80, anchor=tk.E)
+        self.preview_tree.column("end", width=80, anchor=tk.E)
+        self.preview_tree.column("duration", width=90, anchor=tk.E)
+        self.preview_tree.column("selected", width=90, anchor=tk.CENTER)
+        self.preview_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.preview_tree.bind("<<TreeviewSelect>>", self._on_segment_select)
+        self.preview_tree.bind("<ButtonRelease-1>", self._toggle_segment_selection)
+
+        preview_frame = ttk.Frame(segment_frame)
+        preview_frame.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
+        ttk.Label(preview_frame, text="Preview").pack()
+        self.preview_label = ttk.Label(preview_frame)
+        self.preview_label.pack(pady=6)
+
+        action_frame = ttk.Frame(self.preview_window, padding=12)
+        action_frame.pack(fill=tk.X)
+        ttk.Button(action_frame, text="Esporta selezionati", command=self._export_selected).pack(
+            side=tk.LEFT
+        )
+
+        for segment in self.segments.values():
+            self._add_preview_row(segment)
+
+    def _add_preview_row(self, segment: "Segment") -> None:
+        if self.preview_tree is None:
+            return
+        self.preview_tree.insert(
+            "",
+            tk.END,
+            iid=segment.id,
+            values=(
+                segment.video_path.name,
+                f"{segment.start_time:.2f}",
+                f"{segment.end_time:.2f}",
+                f"{segment.duration:.2f}",
+                "Sì" if segment.selected else "No",
+            ),
+        )
 
     def _log(self, message: str) -> None:
         self.log_queue.put(message)
@@ -443,14 +465,12 @@ class Segment:
     start_time: float
     end_time: float
     duration: float
-    preview_path: Path
     selected: bool = True
 
 
-def create_preview_image(video_path: Path, timestamp: float, output_path: Path) -> None:
+def create_preview_image(video_path: Path, timestamp: float) -> tk.PhotoImage:
     cmd = [
         "ffmpeg",
-        "-y",
         "-ss",
         f"{timestamp:.3f}",
         "-i",
@@ -459,9 +479,15 @@ def create_preview_image(video_path: Path, timestamp: float, output_path: Path) 
         "1",
         "-q:v",
         "2",
-        str(output_path),
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "-",
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    result = subprocess.run(cmd, check=True, capture_output=True)
+    encoded = base64.b64encode(result.stdout).decode("ascii")
+    return tk.PhotoImage(data=encoded)
 
 
 def export_video_clip(segment: Segment, export: ExportConfig) -> None:
