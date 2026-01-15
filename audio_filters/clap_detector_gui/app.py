@@ -1,4 +1,3 @@
-import os
 import queue
 import threading
 import tkinter as tk
@@ -6,10 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-import numpy as np
+import tempfile
 import wave
 import subprocess
-import tempfile
+
+import numpy as np
 
 
 @dataclass
@@ -36,7 +36,9 @@ class ClapDetectorApp(tk.Tk):
         self.geometry("920x600")
 
         self.file_list: list[Path] = []
+        self.segments: dict[str, Segment] = {}
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.preview_images: dict[str, tk.PhotoImage] = {}
 
         self._build_ui()
         self._poll_log()
@@ -94,6 +96,36 @@ class ClapDetectorApp(tk.Tk):
         action_frame.pack(fill=tk.X, pady=6)
         self.run_button = ttk.Button(action_frame, text="Avvia analisi", command=self._run_analysis)
         self.run_button.pack(side=tk.LEFT)
+        self.export_button = ttk.Button(
+            action_frame, text="Esporta selezionati", command=self._export_selected, state=tk.DISABLED
+        )
+        self.export_button.pack(side=tk.LEFT, padx=6)
+
+        segment_frame = ttk.LabelFrame(main, text="Segmenti rilevati")
+        segment_frame.pack(fill=tk.BOTH, expand=True, pady=6)
+
+        self.segment_tree = ttk.Treeview(
+            segment_frame, columns=("file", "clap", "start", "end", "selected"), show="headings", height=6
+        )
+        self.segment_tree.heading("file", text="File")
+        self.segment_tree.heading("clap", text="Clap (s)")
+        self.segment_tree.heading("start", text="Inizio (s)")
+        self.segment_tree.heading("end", text="Fine (s)")
+        self.segment_tree.heading("selected", text="Seleziona")
+        self.segment_tree.column("file", width=240, anchor=tk.W)
+        self.segment_tree.column("clap", width=80, anchor=tk.E)
+        self.segment_tree.column("start", width=80, anchor=tk.E)
+        self.segment_tree.column("end", width=80, anchor=tk.E)
+        self.segment_tree.column("selected", width=90, anchor=tk.CENTER)
+        self.segment_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.segment_tree.bind("<<TreeviewSelect>>", self._on_segment_select)
+        self.segment_tree.bind("<ButtonRelease-1>", self._toggle_segment_selection)
+
+        preview_frame = ttk.Frame(segment_frame)
+        preview_frame.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
+        ttk.Label(preview_frame, text="Preview").pack()
+        self.preview_label = ttk.Label(preview_frame)
+        self.preview_label.pack(pady=6)
 
         log_frame = ttk.LabelFrame(main, text="Log")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=6)
@@ -154,6 +186,11 @@ class ClapDetectorApp(tk.Tk):
         export_config = ExportConfig(output_dir=output_dir)
 
         self.run_button.config(state=tk.DISABLED)
+        self.export_button.config(state=tk.DISABLED)
+        self.segment_tree.delete(*self.segment_tree.get_children())
+        self.preview_label.config(image="")
+        self.preview_images.clear()
+        self.segments.clear()
         worker = threading.Thread(
             target=self._analyze_files,
             args=(self.file_list.copy(), detection_config, export_config),
@@ -174,13 +211,15 @@ class ClapDetectorApp(tk.Tk):
                     if not clap_times:
                         self._log("Nessun clap rilevato.")
                         continue
-                    self._log(f"Rilevati {len(clap_times)} clap. Export clip...")
-                    export_clips(file_path, clap_times, detection_config, export_config)
+                    self._log(f"Rilevati {len(clap_times)} clap. Generazione preview...")
+                    self._build_segments(file_path, clap_times, detection_config, export_config)
         except Exception as exc:
             self._log(f"Errore: {exc}")
         finally:
             self._log("Analisi completata.")
             self.run_button.config(state=tk.NORMAL)
+            if self.segments:
+                self.export_button.config(state=tk.NORMAL)
 
     def _extract_audio(self, input_path: Path, output_path: Path) -> None:
         cmd = [
@@ -204,6 +243,107 @@ class ClapDetectorApp(tk.Tk):
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "Errore durante l'esecuzione di ffmpeg")
+
+    def _build_segments(
+        self,
+        video_path: Path,
+        clap_times: list[float],
+        config: DetectionConfig,
+        export: ExportConfig,
+    ) -> None:
+        base_name = video_path.stem
+        preview_dir = export.output_dir / "_preview" / base_name
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+        for index, clap_time in enumerate(clap_times, start=1):
+            start_time = max(0.0, clap_time - config.margin_before_s)
+            end_time = clap_time + config.margin_after_s
+            duration = max(0.1, end_time - start_time)
+
+            segment_id = f"{base_name}-{index:02d}"
+            preview_path = preview_dir / f"{segment_id}.png"
+            create_preview_image(video_path, clap_time, preview_path)
+
+            segment = Segment(
+                id=segment_id,
+                video_path=video_path,
+                clap_time=clap_time,
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration,
+                preview_path=preview_path,
+                selected=True,
+            )
+            self.segments[segment_id] = segment
+            self._add_segment_row(segment)
+
+    def _add_segment_row(self, segment: "Segment") -> None:
+        self.segment_tree.insert(
+            "",
+            tk.END,
+            iid=segment.id,
+            values=(
+                segment.video_path.name,
+                f"{segment.clap_time:.2f}",
+                f"{segment.start_time:.2f}",
+                f"{segment.end_time:.2f}",
+                "Sì" if segment.selected else "No",
+            ),
+        )
+
+    def _toggle_segment_selection(self, event: tk.Event) -> None:
+        column = self.segment_tree.identify_column(event.x)
+        if column != "#5":
+            return
+        row_id = self.segment_tree.identify_row(event.y)
+        if not row_id:
+            return
+        segment = self.segments.get(row_id)
+        if segment is None:
+            return
+        segment.selected = not segment.selected
+        self.segment_tree.set(row_id, "selected", "Sì" if segment.selected else "No")
+
+    def _on_segment_select(self, _event: tk.Event) -> None:
+        selected = self.segment_tree.selection()
+        if not selected:
+            return
+        segment = self.segments.get(selected[0])
+        if segment is None:
+            return
+        if segment.preview_path.exists():
+            image = tk.PhotoImage(file=str(segment.preview_path))
+            self.preview_images[segment.id] = image
+            self.preview_label.config(image=image)
+        else:
+            self.preview_label.config(image="")
+
+    def _export_selected(self) -> None:
+        selected_segments = [segment for segment in self.segments.values() if segment.selected]
+        if not selected_segments:
+            messagebox.showwarning("Attenzione", "Nessun segmento selezionato per l'export.")
+            return
+        export_config = ExportConfig(output_dir=Path(self.output_dir_var.get()).expanduser())
+        self.run_button.config(state=tk.DISABLED)
+        self.export_button.config(state=tk.DISABLED)
+        worker = threading.Thread(
+            target=self._export_worker,
+            args=(selected_segments, export_config),
+            daemon=True,
+        )
+        worker.start()
+
+    def _export_worker(self, segments: list["Segment"], export_config: ExportConfig) -> None:
+        try:
+            for segment in segments:
+                export_video_clip(segment, export_config)
+                self._log(f"Esportato {segment.id}")
+        except Exception as exc:
+            self._log(f"Errore export: {exc}")
+        finally:
+            self._log("Export completato.")
+            self.run_button.config(state=tk.NORMAL)
+            self.export_button.config(state=tk.NORMAL)
 
     def _log(self, message: str) -> None:
         self.log_queue.put(message)
@@ -272,59 +412,60 @@ def detect_claps(audio_path: Path, config: DetectionConfig) -> list[float]:
     return filtered_times
 
 
-def export_clips(
-    video_path: Path, clap_times: list[float], config: DetectionConfig, export: ExportConfig
-) -> None:
-    base_name = video_path.stem
+@dataclass
+class Segment:
+    id: str
+    video_path: Path
+    clap_time: float
+    start_time: float
+    end_time: float
+    duration: float
+    preview_path: Path
+    selected: bool = True
+
+
+def create_preview_image(video_path: Path, timestamp: float, output_path: Path) -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def export_video_clip(segment: Segment, export: ExportConfig) -> None:
+    base_name = segment.video_path.stem
     output_dir = export.output_dir / base_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for index, clap_time in enumerate(clap_times, start=1):
-        start_time = max(0.0, clap_time - config.margin_before_s)
-        end_time = clap_time + config.margin_after_s
-        duration = max(0.1, end_time - start_time)
+    clip_name = f"{base_name}_clap_{segment.id.split('-')[-1]}"
+    video_out = output_dir / f"{clip_name}.mp4"
 
-        clip_name = f"{base_name}_clap_{index:02d}"
-        video_out = output_dir / f"{clip_name}.mp4"
-        audio_out = output_dir / f"{clip_name}.wav"
+    video_cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{segment.start_time:.3f}",
+        "-i",
+        str(segment.video_path),
+        "-t",
+        f"{segment.duration:.3f}",
+        "-c:v",
+        export.video_codec,
+        "-c:a",
+        export.audio_codec,
+        str(video_out),
+    ]
 
-        video_cmd = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            f"{start_time:.3f}",
-            "-i",
-            str(video_path),
-            "-t",
-            f"{duration:.3f}",
-            "-c:v",
-            export.video_codec,
-            "-c:a",
-            export.audio_codec,
-            str(video_out),
-        ]
-
-        audio_cmd = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            f"{start_time:.3f}",
-            "-i",
-            str(video_path),
-            "-t",
-            f"{duration:.3f}",
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "44100",
-            "-f",
-            "wav",
-            str(audio_out),
-        ]
-
-        subprocess.run(video_cmd, check=True)
-        subprocess.run(audio_cmd, check=True)
+    subprocess.run(video_cmd, check=True, capture_output=True)
 
 
 if __name__ == "__main__":

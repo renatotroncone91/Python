@@ -4,7 +4,8 @@ Applicativo Python con interfaccia grafica per:
 
 - Analizzare uno o più file video (`.mp4`, `.qt`, `.mov`, `.mkv`, `.avi`).
 - Estrarre l'audio e rilevare i battiti di mani (clap).
-- Salvare clip audio/video con margini configurabili prima/dopo il clap.
+- Mostrare una preview per ogni segmento rilevato.
+- Salvare solo clip video (con audio incluso) con margini configurabili prima/dopo il clap.
 
 ## Requisiti
 
@@ -41,9 +42,23 @@ Le clip vengono salvate in una sottocartella con il nome del file originale:
 clap_output/
   nome_video/
     nome_video_clap_01.mp4
-    nome_video_clap_01.wav
     ...
 ```
+
+Le preview vengono salvate in:
+
+```
+clap_output/_preview/
+  nome_video/
+    nome_video-01.png
+```
+
+## Flusso di utilizzo
+
+1. Seleziona i file video.
+2. Avvia l'analisi e attendi la generazione delle preview.
+3. Spunta i segmenti che vuoi esportare (colonna **Seleziona**).
+4. Premi **Esporta selezionati**.
 
 ## Note
 
