@@ -20,8 +20,8 @@ class DetectionConfig:
     window_ms: float = 20.0
     hop_ms: float = 10.0
     threshold_ratio: float = 0.6
-    min_gap_s: float = 0.25
-    merge_gap_s: float = 2.0
+    min_interval_s: float = 0.25
+    max_interval_s: float = 2.0
     margin_before_s: float = 0.5
     margin_after_s: float = 0.8
 
@@ -76,16 +76,16 @@ class ClapDetectorApp(tk.Tk):
         self.window_ms_var = tk.DoubleVar(value=20.0)
         self.hop_ms_var = tk.DoubleVar(value=10.0)
         self.threshold_ratio_var = tk.DoubleVar(value=0.6)
-        self.min_gap_var = tk.DoubleVar(value=0.25)
-        self.merge_gap_var = tk.DoubleVar(value=2.0)
+        self.min_interval_var = tk.DoubleVar(value=0.25)
+        self.max_interval_var = tk.DoubleVar(value=2.0)
         self.margin_before_var = tk.DoubleVar(value=0.5)
         self.margin_after_var = tk.DoubleVar(value=0.8)
 
         self._add_labeled_entry(settings_frame, "Finestra (ms)", self.window_ms_var, 0, 0)
         self._add_labeled_entry(settings_frame, "Hop (ms)", self.hop_ms_var, 0, 2)
         self._add_labeled_entry(settings_frame, "Soglia (0-1)", self.threshold_ratio_var, 1, 0)
-        self._add_labeled_entry(settings_frame, "Gap minimo (s)", self.min_gap_var, 1, 2)
-        self._add_labeled_entry(settings_frame, "Gap unione (s)", self.merge_gap_var, 2, 0)
+        self._add_labeled_entry(settings_frame, "Intervallo minimo (s)", self.min_interval_var, 1, 2)
+        self._add_labeled_entry(settings_frame, "Intervallo massimo (s)", self.max_interval_var, 2, 0)
         self._add_labeled_entry(settings_frame, "Margine inizio (s)", self.margin_before_var, 2, 2)
         self._add_labeled_entry(settings_frame, "Margine fine (s)", self.margin_after_var, 3, 0)
 
@@ -162,8 +162,8 @@ class ClapDetectorApp(tk.Tk):
             window_ms=self.window_ms_var.get(),
             hop_ms=self.hop_ms_var.get(),
             threshold_ratio=self.threshold_ratio_var.get(),
-            min_gap_s=self.min_gap_var.get(),
-            merge_gap_s=self.merge_gap_var.get(),
+            min_interval_s=self.min_interval_var.get(),
+            max_interval_s=self.max_interval_var.get(),
             margin_before_s=self.margin_before_var.get(),
             margin_after_s=self.margin_after_var.get(),
         )
@@ -238,7 +238,7 @@ class ClapDetectorApp(tk.Tk):
         config: DetectionConfig,
     ) -> None:
         base_name = video_path.stem
-        grouped = group_clap_segments(clap_times, config.merge_gap_s)
+        grouped = group_clap_segments(clap_times, config.max_interval_s)
         for index, (start_clap, end_clap) in enumerate(grouped, start=1):
             start_time = max(0.0, start_clap - config.margin_before_s)
             end_time = end_clap + config.margin_after_s
@@ -487,17 +487,23 @@ def detect_claps(audio_path: Path, config: DetectionConfig) -> list[float]:
         peak_idx = current_start + int(np.argmax(segment))
         clap_times.append(times[peak_idx])
 
+    return filter_claps_by_interval(clap_times, config.min_interval_s)
+
+
+def filter_claps_by_interval(clap_times: list[float], min_interval_s: float) -> list[float]:
+    if not clap_times:
+        return []
+    sorted_times = sorted(clap_times)
     filtered_times: list[float] = []
     last_time = -np.inf
-    for t in clap_times:
-        if t - last_time >= config.min_gap_s:
-            filtered_times.append(t)
-            last_time = t
-
+    for time in sorted_times:
+        if time - last_time >= min_interval_s:
+            filtered_times.append(time)
+            last_time = time
     return filtered_times
 
 
-def group_clap_segments(clap_times: list[float], merge_gap_s: float) -> list[tuple[float, float]]:
+def group_clap_segments(clap_times: list[float], max_interval_s: float) -> list[tuple[float, float]]:
     if not clap_times:
         return []
     sorted_times = sorted(clap_times)
@@ -506,7 +512,7 @@ def group_clap_segments(clap_times: list[float], merge_gap_s: float) -> list[tup
     last_time = sorted_times[0]
 
     for time in sorted_times[1:]:
-        if time - last_time <= merge_gap_s:
+        if time - last_time <= max_interval_s:
             last_time = time
             continue
         segments.append((segment_start, last_time))
