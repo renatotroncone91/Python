@@ -12,6 +12,8 @@ import subprocess
 
 import numpy as np
 
+PREVIEW_WIDTH = 360
+
 
 @dataclass
 class DetectionConfig:
@@ -338,7 +340,7 @@ class ClapDetectorApp(tk.Tk):
             return
         self.preview_window = tk.Toplevel(self)
         self.preview_window.title("Preview segmenti")
-        self.preview_window.geometry("900x500")
+        self.preview_window.geometry("980x520")
 
         segment_frame = ttk.Frame(self.preview_window, padding=12)
         segment_frame.pack(fill=tk.BOTH, expand=True)
@@ -532,6 +534,8 @@ def create_preview_image(video_path: Path, timestamp: float) -> tk.PhotoImage:
         f"{timestamp:.3f}",
         "-i",
         str(video_path),
+        "-vf",
+        f"scale={PREVIEW_WIDTH}:-1",
         "-frames:v",
         "1",
         "-q:v",

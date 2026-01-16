@@ -25,15 +25,15 @@ pip install numpy
 python app.py
 ```
 
-## Parametri disponibili
+## Parametri disponibili (spiegazione dettagliata)
 
-- **Finestra (ms)**: dimensione finestra per l'energia RMS.
-- **Hop (ms)**: passo tra finestre.
-- **Soglia (0-1)**: rapporto rispetto al picco massimo dell'energia (es. 0.6).
-- **Gap minimo (s)**: distanza minima tra clap consecutivi.
+- **Finestra (ms)**: durata della finestra su cui si calcola l'energia RMS. Valori più alti rendono il rilevamento più stabile ma meno reattivo ai clap molto rapidi.
+- **Hop (ms)**: passo tra una finestra e l'altra. Valori più bassi aumentano la precisione temporale, ma richiedono più calcolo.
+- **Soglia (0-1)**: percentuale del picco massimo di energia. Se alzi la soglia rilevi solo clap molto forti; se la abbassi aumentano i rilevamenti (anche falsi positivi).
+- **Gap minimo (s)**: distanza minima tra due clap consecutivi per evitare doppie rilevazioni dello stesso evento.
 - **Gap unione (s)**: se due clap sono più vicini di questo valore, vengono uniti nello stesso segmento (utile per applausi lunghi).
-- **Margine inizio (s)**: secondi aggiuntivi prima del clap.
-- **Margine fine (s)**: secondi aggiuntivi dopo il clap.
+- **Margine inizio (s)**: secondi aggiuntivi inseriti prima dell'inizio del segmento.
+- **Margine fine (s)**: secondi aggiuntivi inseriti dopo la fine del segmento.
 
 ## Output
 
