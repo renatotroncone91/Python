@@ -52,8 +52,9 @@ Le preview vengono generate in memoria e non vengono salvate su disco.
 
 1. Seleziona i file video.
 2. Avvia l'analisi e attendi l'apertura della finestra di preview.
-3. Spunta i segmenti che vuoi esportare (colonna **Seleziona**).
-4. Premi **Esporta selezionati**.
+3. Ordina le colonne **Inizio**, **Fine** o **Durata** cliccando sull'intestazione.
+4. Usa i pulsanti **Salva**/**Scarta** nella tabella oppure **Seleziona tutti**/**Deseleziona tutti**.
+5. Premi **Esporta selezionati** per salvare in batch.
 
 ## Note
 

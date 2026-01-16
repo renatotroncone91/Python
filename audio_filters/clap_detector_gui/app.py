@@ -44,6 +44,7 @@ class ClapDetectorApp(tk.Tk):
         self.preview_window: tk.Toplevel | None = None
         self.preview_tree: ttk.Treeview | None = None
         self.preview_label: ttk.Label | None = None
+        self.preview_sort_reverse: dict[str, bool] = {}
 
         self._build_ui()
         self._poll_log()
@@ -259,16 +260,18 @@ class ClapDetectorApp(tk.Tk):
         if self.preview_tree is None:
             return
         column = self.preview_tree.identify_column(event.x)
-        if column != "#5":
-            return
         row_id = self.preview_tree.identify_row(event.y)
         if not row_id:
+            return
+        if column in {"#5", "#6", "#7"}:
+            self._handle_preview_action(row_id, column)
             return
         segment = self.segments.get(row_id)
         if segment is None:
             return
-        segment.selected = not segment.selected
-        self.preview_tree.set(row_id, "selected", "Sì" if segment.selected else "No")
+        if column == "#5":
+            segment.selected = not segment.selected
+            self.preview_tree.set(row_id, "selected", "Sì" if segment.selected else "No")
 
     def _on_segment_select(self, _event: tk.Event) -> None:
         if self.preview_tree is None or self.preview_label is None:
@@ -284,6 +287,23 @@ class ClapDetectorApp(tk.Tk):
             image = create_preview_image(segment.video_path, segment.start_time)
             self.preview_images[segment.id] = image
         self.preview_label.config(image=image)
+
+    def _handle_preview_action(self, row_id: str, column: str) -> None:
+        segment = self.segments.get(row_id)
+        if segment is None or self.preview_tree is None:
+            return
+        if column == "#6":
+            export_config = ExportConfig(output_dir=Path(self.output_dir_var.get()).expanduser())
+            try:
+                export_video_clip(segment, export_config)
+                self._log(f"Esportato {segment.id}")
+                segment.selected = False
+                self.preview_tree.set(row_id, "selected", "No")
+            except Exception as exc:
+                self._log(f"Errore export: {exc}")
+        elif column == "#7":
+            segment.selected = False
+            self.preview_tree.set(row_id, "selected", "No")
 
     def _export_selected(self) -> None:
         selected_segments = [segment for segment in self.segments.values() if segment.selected]
@@ -324,18 +344,24 @@ class ClapDetectorApp(tk.Tk):
         segment_frame.pack(fill=tk.BOTH, expand=True)
 
         self.preview_tree = ttk.Treeview(
-            segment_frame, columns=("file", "start", "end", "duration", "selected"), show="headings"
+            segment_frame,
+            columns=("file", "start", "end", "duration", "selected", "save", "discard"),
+            show="headings",
         )
         self.preview_tree.heading("file", text="File")
-        self.preview_tree.heading("start", text="Inizio (s)")
-        self.preview_tree.heading("end", text="Fine (s)")
-        self.preview_tree.heading("duration", text="Durata (s)")
+        self.preview_tree.heading("start", text="Inizio (s)", command=lambda: self._sort_preview("start"))
+        self.preview_tree.heading("end", text="Fine (s)", command=lambda: self._sort_preview("end"))
+        self.preview_tree.heading("duration", text="Durata (s)", command=lambda: self._sort_preview("duration"))
         self.preview_tree.heading("selected", text="Seleziona")
+        self.preview_tree.heading("save", text="Salva")
+        self.preview_tree.heading("discard", text="Scarta")
         self.preview_tree.column("file", width=260, anchor=tk.W)
         self.preview_tree.column("start", width=80, anchor=tk.E)
         self.preview_tree.column("end", width=80, anchor=tk.E)
         self.preview_tree.column("duration", width=90, anchor=tk.E)
         self.preview_tree.column("selected", width=90, anchor=tk.CENTER)
+        self.preview_tree.column("save", width=70, anchor=tk.CENTER)
+        self.preview_tree.column("discard", width=70, anchor=tk.CENTER)
         self.preview_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.preview_tree.bind("<<TreeviewSelect>>", self._on_segment_select)
         self.preview_tree.bind("<ButtonRelease-1>", self._toggle_segment_selection)
@@ -348,7 +374,11 @@ class ClapDetectorApp(tk.Tk):
 
         action_frame = ttk.Frame(self.preview_window, padding=12)
         action_frame.pack(fill=tk.X)
-        ttk.Button(action_frame, text="Esporta selezionati", command=self._export_selected).pack(
+        ttk.Button(action_frame, text="Esporta selezionati", command=self._export_selected).pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="Seleziona tutti", command=self._select_all_segments).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(action_frame, text="Deseleziona tutti", command=self._deselect_all_segments).pack(
             side=tk.LEFT
         )
 
@@ -368,8 +398,35 @@ class ClapDetectorApp(tk.Tk):
                 f"{segment.end_time:.2f}",
                 f"{segment.duration:.2f}",
                 "Sì" if segment.selected else "No",
+                "Salva",
+                "Scarta",
             ),
         )
+
+    def _select_all_segments(self) -> None:
+        for segment in self.segments.values():
+            segment.selected = True
+            if self.preview_tree is not None:
+                self.preview_tree.set(segment.id, "selected", "Sì")
+
+    def _deselect_all_segments(self) -> None:
+        for segment in self.segments.values():
+            segment.selected = False
+            if self.preview_tree is not None:
+                self.preview_tree.set(segment.id, "selected", "No")
+
+    def _sort_preview(self, key: str) -> None:
+        if self.preview_tree is None:
+            return
+        reverse = self.preview_sort_reverse.get(key, False)
+        items = list(self.preview_tree.get_children(""))
+        items.sort(
+            key=lambda item: float(self.preview_tree.set(item, key)),
+            reverse=reverse,
+        )
+        for index, item in enumerate(items):
+            self.preview_tree.move(item, "", index)
+        self.preview_sort_reverse[key] = not reverse
 
     def _log(self, message: str) -> None:
         self.log_queue.put(message)
