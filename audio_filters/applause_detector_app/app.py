@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
-import json
-import math
 import pathlib
 import subprocess
 import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import wave
 
 import numpy as np
-from scipy.io import wavfile
-from scipy.signal import resample_poly, stft
 
 
 @dataclasses.dataclass
@@ -100,15 +97,52 @@ def export_segment(
     )
 
 
+def read_wav(wav_path: pathlib.Path) -> tuple[int, np.ndarray]:
+    with wave.open(str(wav_path), "rb") as wav_file:
+        sample_rate = wav_file.getframerate()
+        num_channels = wav_file.getnchannels()
+        num_frames = wav_file.getnframes()
+        sample_width = wav_file.getsampwidth()
+        raw = wav_file.readframes(num_frames)
+
+    if sample_width == 1:
+        dtype = np.uint8
+    elif sample_width == 2:
+        dtype = np.int16
+    elif sample_width == 4:
+        dtype = np.int32
+    else:
+        raise ValueError(f"Unsupported sample width: {sample_width}")
+
+    data = np.frombuffer(raw, dtype=dtype)
+    if num_channels > 1:
+        data = data.reshape(-1, num_channels).mean(axis=1)
+    if sample_width == 1:
+        data = data.astype(np.float32) - 128.0
+    return sample_rate, data.astype(np.float32)
+
+
+def resample_audio(
+    data: np.ndarray, original_rate: int, target_rate: int
+) -> np.ndarray:
+    if original_rate == target_rate or data.size == 0:
+        return data
+    duration = data.size / float(original_rate)
+    target_length = int(duration * target_rate)
+    if target_length <= 1:
+        return data
+    original_times = np.linspace(0, duration, num=data.size, endpoint=False)
+    target_times = np.linspace(0, duration, num=target_length, endpoint=False)
+    return np.interp(target_times, original_times, data).astype(np.float32)
+
+
 def load_audio(wav_path: pathlib.Path, target_rate: int = 22050) -> np.ndarray:
-    sample_rate, data = wavfile.read(wav_path)
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    data = data.astype(np.float32)
+    sample_rate, data = read_wav(wav_path)
     if sample_rate != target_rate:
-        data = resample_poly(data, target_rate, sample_rate)
-    if np.max(np.abs(data)) > 0:
-        data = data / np.max(np.abs(data))
+        data = resample_audio(data, sample_rate, target_rate)
+    max_abs = float(np.max(np.abs(data))) if data.size else 0.0
+    if max_abs > 0:
+        data = data / max_abs
     return data
 
 
@@ -171,13 +205,7 @@ def detect_applause_segments(
 
     frame_size = 1024
     hop_length = 512
-    _, times, spectrum = stft(
-        data,
-        fs=22050,
-        nperseg=frame_size,
-        noverlap=frame_size - hop_length,
-    )
-    magnitude = np.abs(spectrum)
+    times, magnitude = compute_stft(data, 22050, frame_size, hop_length)
     rms = np.sqrt(np.mean(magnitude**2, axis=0))
     flux = np.sum(np.maximum(0.0, np.diff(magnitude, axis=1)), axis=0)
     flux = np.concatenate([[0.0], flux])
@@ -193,6 +221,26 @@ def detect_applause_segments(
             np.mean(score[(times >= segment.start) & (times <= segment.end)])
         )
     return segments
+
+
+def compute_stft(
+    data: np.ndarray, sample_rate: int, frame_size: int, hop_length: int
+) -> tuple[np.ndarray, np.ndarray]:
+    if data.size < frame_size:
+        pad = np.zeros(frame_size - data.size, dtype=np.float32)
+        data = np.concatenate([data, pad])
+
+    num_frames = 1 + (len(data) - frame_size) // hop_length
+    window = np.hanning(frame_size).astype(np.float32)
+    frames = np.lib.stride_tricks.sliding_window_view(data, frame_size)[
+        ::hop_length
+    ]
+    frames = frames[:num_frames]
+    windowed = frames * window
+    spectrum = np.fft.rfft(windowed, axis=1)
+    magnitude = np.abs(spectrum).T
+    times = (np.arange(num_frames) * hop_length) / float(sample_rate)
+    return times, magnitude
 
 
 def build_previews(
@@ -379,14 +427,6 @@ class ApplauseDetectorApp:
         if errors:
             summary += "\n\n" + "\n".join(errors)
         messagebox.showinfo("Esportazione completata", summary)
-
-
-def write_config(output_path: pathlib.Path) -> None:
-    config = {
-        "audio": {"sample_rate": 22050, "frame_size": 1024, "hop_length": 512},
-        "detection": {"min_duration": 0.3, "min_gap": 0.2},
-    }
-    output_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def main() -> None:

@@ -5,7 +5,7 @@ GUI per analizzare video e individuare segmenti con applausi, con anteprima e se
 ## Requisiti
 
 - `ffmpeg` disponibile nel PATH.
-- Dipendenze Python: `numpy`, `scipy`.
+- Dipendenze Python: `numpy`.
 
 ## Avvio
 
